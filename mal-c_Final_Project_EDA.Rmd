@@ -1,0 +1,413 @@
+---
+title: "Final Project EDA"
+author: "mal-c"
+date: "12/06/2020"
+output: 
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+
+```{r, message = FALSE}
+#package install
+library(rgdal)
+library(sp)
+library(tidyverse)
+library(rnaturalearth)
+library(sf)
+library(rgeos)
+library(auk)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(remotes)
+library(lubridate)
+```
+
+
+```{r}
+#load data
+filtered_data<- read.csv("data/processed/filtered_data.csv")
+```
+
+# Exploratory Data Analysis using eBird Data 
+
+## Introduction/Basic Analyses
+
+The data used in this exploratory data analysis is taken from the Cornell Lab of Ornithology's birding database, eBird. I chose to analyze this data because I am interested in the wildlife trends both in the wake of the pandemic and also overall migratory patterns. One of my friends has been attentively utilizing the eBird observation reporting platform for several years and we found that the dataset is open-access, with additional details available upon request. The default dataset was extremely large, and after a number of tries I narrowed down my data set to the observation data from August 2020 to September 2020 in the state of Illinois. 
+
+*The dataset used in this report can be retrieved here: https://ebird.org/data/download *
+
+<br>
+Before jumping into migratory data, I decided to start with information about the whole dataset overall, to get a sense for how extensive the dataset is beyond the several megabytes of storage it takes up. My first query was the number of species that were observed in Illinois in the dataset, total.
+
+```{r}
+count(distinct(filtered_data, common_name))
+```
+<br>
+This tells us that were 291 species of birds reported in the months of August through September, 2020. To validate this data, it was necessary also to determine how many times people had submitted observations and reports on this number of species. This meant that I needed to tally the number of checklists that people had submitted. Checklists are basically lists of bird observations people upload after a birding trip to record their findings.
+
+```{r}
+filtered_data %>% 
+  distinct(checklist_id) %>% 
+  count()
+```
+<br>
+There were 24,903 checklists submitted by people using the eBird platform. Given that there were this many checklists, divided over the course of 2 months, that meant almost 400 checklists a day. Then I felt it was necessary to determine exactly how many people were using it. How many people contributed to the 24,000 checklists I am analyzing?
+
+```{r}
+count(distinct(filtered_data, observer_id))
+```
+With 2094 people submitting checklists over the course of 2 months, the number of 24,903 checklists seemed a lot more reasonable. But not every person would be submitting the same number of checklists, since it stands to reason some people bird more than others. What is the greatest number of checklists submitted by one person, and how does the distribution of them look?
+
+```{r}
+checklist_data <- filtered_data %>% distinct(observer_id, checklist_id)
+
+ggplot(checklist_data, mapping = aes(x = observer_id)) +
+  geom_bar()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+checklists_per_observer <- count(checklist_data, observer_id, sort = TRUE)
+
+head(checklists_per_observer)
+```
+<br>
+Absurdly enough, one observer submitted 1307 checklists in 2 months, which amounts to more than 20 checklists a day! I did in fact end up verifying this number was possible with the friend who uses the platform more than I do, and they confirmed that some people really are that dedicated. 
+
+Having found that users could be so dedicated, I also calculated the highest number of checklists submitted in a day.
+
+```{r}
+dates <- filtered_data %>% 
+  distinct(observation_date, checklist_id)
+
+chrono_dates <- arrange(dates, observation_date)
+
+ggplot(chrono_dates, aes(x = observation_date))+
+  geom_bar()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+head(count(dates, observation_date, sort = TRUE))
+```
+<br>
+One date in particular had a higher count than the rest, and that was September 13th. There were no special reasons for the surge in number of checklists since Labor day had been the week before, but it may just have been a convenient Sunday for Illinois birders. September is also a migratory season for shorebirds and warblers.
+
+With these basic, probing analyses in mind, I decided to have a further look at the user base and when they were using the platform, to get a sense for people's optimal birding times. 
+
+## Exploring checklist submission time
+
+This section focuses on birder and birding habits. It most importantly involves exploring the time frames in which observers submit their checklists, given that they have submitted so many. 
+
+First, I divided the submissions into day-of-week. Do birders follow a trend influenced by a typical work week? 
+
+```{r}
+time_data <- filtered_data %>% distinct(observation_date, checklist_id, time_observations_started) 
+time_data %>% 
+  mutate(day_of_week = wday(observation_date, label = TRUE)) %>% 
+  group_by(day_of_week) %>% 
+  summarize(num_checklists = n()) %>% 
+  ggplot(aes(x = day_of_week, y = num_checklists, fill = day_of_week))+
+  geom_bar(stat = "identity")+
+  labs(title = "eBird checklists submitted by weekday")
+```
+<br>
+Judging by the plot above, birders do tend to submit a lot more checklists (500-1000) on the weekends as opposed to weekdays, and appear to favor Saturdays a little more than Sundays. Then, what about time of day? Visibility would suggest more birding during the daytime, but perhaps there are specific hours that are favorable. For this, I used the data on when observation checklists were reported to start. 
+*Note: Observations reported without a time were omitted from the following graphs as they did not contain the targeted data being explored, which is time of submission.*
+
+```{r, warning = FALSE}
+time_data %>% 
+  filter(!is.na(time_observations_started)) %>% 
+  mutate(time = hms(time_observations_started)) %>% 
+  mutate(hour_of_day = hour(time)) %>% 
+  group_by(hour_of_day) %>% 
+  summarize(num_checklists = n(), na.rm=TRUE) %>% 
+  ggplot(aes(x = hour_of_day, y = num_checklists))+
+  geom_point()+
+  geom_line()+
+  labs(title = "eBird checklists submitted by hour")
+```
+<br>
+It is shown above that nearly no birders are active past 8 in the evening, but most submissions occur at 7am. To put it in perspective, it means that if one is a birder that lives in a metropolis, they would have to wake up closer to 5 or 6am, get ready, and leave before 7 so as to arrive at their desired location for birding before starting to report observations. By this, the birding community seems extremely dedicated if they wake up that early!
+
+To get a clearer perspective of more general times-of-day, the hours can also be grouped into chunks to show time of day, for a larger overall trend.
+
+```{r}
+order <- c("Morning", "Afternoon", "Evening", "Night")
+time_data %>% 
+  filter(!is.na(time_observations_started)) %>% 
+  mutate(time = hms(time_observations_started)) %>% 
+  mutate(hour_of_day = hour(time)) %>% 
+  mutate(time_of_day = ifelse(hour_of_day %in% 0:4, "Night", 
+                              ifelse(hour_of_day %in% 5:10, "Morning",
+                                     ifelse(hour_of_day %in% 11:16, "Afternoon",
+                                            ifelse(hour_of_day %in% 17:21, "Evening","Night"))))) %>% 
+  group_by(time_of_day) %>% 
+  summarize(num_checklists = n(), na.rm = TRUE) %>% 
+  ggplot(aes(x = factor(time_of_day, level = order), y = num_checklists))+
+  geom_point(size = 4, na.rm = TRUE)+
+  labs(title = "eBird checklists submitted by hour", x = "Time of Day")
+
+```
+<br>
+*Note: Corresponding hours for times of day are Morning(5-10), Afternoon (11-16), Evening(17-21), Night (22-23, 0-4).*
+<br>
+With this we can get a clearer picture of the frequency differences for different times of day. Here, the afternoon checklists are also significant and are around half of the frequency of morning checklists. I then wondered if there was a difference for time of day reporting if the days of the week were different, or if mornings were just the best time for birding. 
+
+```{r, fig.width = 9, fig.height = 10}
+time_data %>% 
+  filter(!is.na(time_observations_started)) %>% 
+  mutate(time = hms(time_observations_started)) %>% 
+  mutate(hour_of_day = hour(time)) %>% 
+  mutate(time_of_day = ifelse(hour_of_day %in% 0:4, "Night", 
+                              ifelse(hour_of_day %in% 5:10, "Morning",
+                                     ifelse(hour_of_day %in% 11:16, "Afternoon",
+                                            ifelse(hour_of_day %in% 17:21, "Evening","Night"))))) %>% 
+  mutate(day_of_week = wday(observation_date, label = TRUE)) %>% 
+  group_by(time_of_day, day_of_week) %>% 
+  summarize(num_checklists = n(), na.rm = TRUE) %>% 
+  ggplot(aes(x = factor(time_of_day, level = order), y = num_checklists, color = time_of_day))+
+  geom_point(size = 3)+
+  facet_wrap(~day_of_week, ncol = 1)+
+  labs(title = "eBird checklists submitted by time of day each weekday")
+```
+<br>
+This shows, by day of week, what time of day is used most frequently when observers submit checklists. It appears that no matter what, there are definitely more people birding in the morning than there are later on in the day. Which makes sense, given night means more predators and early in the morning human activity is not very high, so birds might still be observable. It also suggests that birders report checklists prior to going to work or school on weekdays!
+
+Given that I successfully learned about the most frequent times for birding, I found it important that I began looking at where birds were observed, and what I was most curious about: the possible migratory trends. 
+
+## Birds: Migratory and non-migratory!
+
+*General migratory patterns for birds in Illinois are found here: https://ebird.org/barchart?byr=1900&eyr=2020&bmo=8&emo=11&r=US-IL *
+
+Now we get into the most interesting part of the exploratory data analysis, and what drew me to study this data set in the first place. Bird trends! A good number of species are found in Illinois year round, which means that their trend data should be somewhat stagnant. For this, I first found the birds that were most frequently observed in the state. 
+
+
+```{r}
+head(count(filtered_data, common_name, sort = TRUE))
+```
+<br>
+This yielded the top 6 observed birds in Illinois, all of which, according to the eBird trend database, are all residents of Illinois year round. That means that their observation occurences should remain around the same. The observation frequency of the most often-seen birds is shown below. 
+*Note: Days from August to September are not in perfectly-sized weeks, so the incomplete week was removed so as not to skew frequency trends. *
+
+```{r fig.width = 8, fig.height = 10}
+week1 <- interval(ymd("2020-08-01"), ymd("2020-08-07"))
+week2 <- interval(ymd("2020-08-08"), ymd("2020-08-14"))
+week3 <- interval(ymd("2020-08-15"), ymd("2020-08-21"))
+week4 <- interval(ymd("2020-08-22"), ymd("2020-08-28"))
+week5 <- interval(ymd("2020-08-29"), ymd("2020-09-04"))
+week6 <- interval(ymd("2020-09-05"), ymd("2020-09-11"))
+week7 <- interval(ymd("2020-09-12"), ymd("2020-09-18"))
+week8 <- interval(ymd("2020-09-19"), ymd("2020-09-25"))
+week9 <- interval(ymd("2020-09-26"), ymd("2020-09-30"))
+top_birds <- c("American Goldfinch", "Northwern Cardinal", "American Robin", "Blue Jay", "Mourning Dove", "Downy Woodpecker")
+
+
+top_observations <- filtered_data %>% 
+  filter(common_name %in% top_birds)
+
+top_observations %>% 
+  mutate(observation_date = ymd(observation_date)) %>% 
+  mutate(week_num = case_when(
+    observation_date %within% week1 ~ "Week 1",
+    observation_date %within% week2 ~ "Week 2",
+    observation_date %within% week3 ~ "Week 3",
+    observation_date %within% week4 ~ "Week 4",
+    observation_date %within% week5 ~ "Week 5",
+    observation_date %within% week6 ~ "Week 6",
+    observation_date %within% week7 ~ "Week 7",
+    observation_date %within% week8 ~ "Week 8",
+    observation_date %within% week9 ~ "Week 9"
+  )) %>% 
+  filter(week_num != "Week 9") %>%
+  group_by(week_num, common_name) %>% 
+  summarize(num_observations = n()) %>% 
+  ggplot(aes(x = common_name, y = num_observations, color = common_name))+
+  geom_point()+
+  facet_wrap(~week_num, ncol=1) 
+```
+<br>
+From here I noted that the birds which are supposed to be present in similar numbers year round (according to trend data) have not actually been all so consistent. This is particularly notable in a few of the species, but we will be taking Blue Jays as an example, as seen below. 
+
+```{r}
+top_observations %>% 
+  mutate(observation_date = ymd(observation_date)) %>% 
+  filter(common_name == "Blue Jay") %>% 
+  mutate(week_num = case_when(
+    observation_date %within% week1 ~ "Week 1",
+    observation_date %within% week2 ~ "Week 2",
+    observation_date %within% week3 ~ "Week 3",
+    observation_date %within% week4 ~ "Week 4",
+    observation_date %within% week5 ~ "Week 5",
+    observation_date %within% week6 ~ "Week 6",
+    observation_date %within% week7 ~ "Week 7",
+    observation_date %within% week8 ~ "Week 8",
+    observation_date %within% week9 ~ "Week 9"
+  )) %>%  
+  filter(week_num != "Week 9") %>% #removing incomplete week
+  group_by(week_num) %>% 
+  summarize(num_observations = n()) %>% 
+  ggplot(aes(x=week_num, y = num_observations)) +
+  geom_point()+
+  geom_line(aes(group = 1))+
+  scale_y_continuous(limit = c(0,3000))+
+  labs(title = "Blue Jay Observations by Week", subtitle = "Starting August 1, 2020 through September 25, 2020")
+```
+<br>
+While Blue Jays are not migratory, it appears their number of observations increases a startling amount, almost doubling from Week 1 to Week 7, even though Blue Jays are noted to be observed typically more in September than August. This may be due two things: one, what birders call variable detection: people might overlook common birds more in certain seasons than others. Or two, what is related to variable detection, but the fact that people might be reporting more common birds because they are out looking for migratory birds. It just so happens that August through September is a migratory season for two families of birds: Warblers and Shorebirds. Below is a plot of Warbler observations.
+
+```{r}
+filtered_data %>% 
+  filter(taxonomic_order %in% (32667:33029)) %>% 
+  mutate(observation_date = ymd(observation_date)) %>% 
+  mutate(week_num = case_when(
+    observation_date %within% week1 ~ "Week 1",
+    observation_date %within% week2 ~ "Week 2",
+    observation_date %within% week3 ~ "Week 3",
+    observation_date %within% week4 ~ "Week 4",
+    observation_date %within% week5 ~ "Week 5",
+    observation_date %within% week6 ~ "Week 6",
+    observation_date %within% week7 ~ "Week 7",
+    observation_date %within% week8 ~ "Week 8",
+    observation_date %within% week9 ~ "Week 9"
+  )) %>% 
+  group_by(week_num) %>% 
+  summarize(num_observations = n()) %>% 
+  ggplot(aes(x=week_num, y = num_observations)) +
+  geom_point()+
+  geom_line(aes(group = 1))+
+  scale_y_continuous(limit = c(0,8000))+
+  labs(title = "Warbler Observations by Week", subtitle = "Starting August 1, 2020 through September 25, 2020")
+
+```
+<br>
+I found that the observations of warblers doesn't coincide with the strange variability in Blue Jays in terms of variable detection, but it does suggest that because people are looking for warblers, they might be reporting more Blue Jays as they see them. 
+
+```{r}
+#loading map requirements
+background <- st_read("cb_2018_us_county_20m/cb_2018_us_county_20m.shp", quiet = TRUE) 
+
+background_smol <- background %>% filter(STATEFP == "17") #code for IL is 17
+
+filtered_data_x <- filtered_data
+
+filtered_data_week <- 
+  filtered_data_x %>% 
+  mutate(observation_date = ymd(observation_date)) %>% 
+  mutate(week_num = case_when(
+    observation_date %within% week1 ~ "Week 1",
+    observation_date %within% week2 ~ "Week 2",
+    observation_date %within% week3 ~ "Week 3",
+    observation_date %within% week4 ~ "Week 4",
+    observation_date %within% week5 ~ "Week 5",
+    observation_date %within% week6 ~ "Week 6",
+    observation_date %within% week7 ~ "Week 7",
+    observation_date %within% week8 ~ "Week 8",
+    observation_date %within% week9 ~ "Week 9"
+  )) 
+filtered_data_week$month <- format(as.Date(filtered_data_week$observation_date,format="%Y-%m-%d"), format = "%m")
+```
+<br>
+With that, we can move to showing the migratory trends on a map! I have chosen to first focus on warblers, as they are a large family of migratory species, and they have already been plotted previously in comparison to Blue Jays. For this, I accessed the taxonomic code for species of birds since not all warblers have the word "warbler" in their name. However, the taxonomic code tends to group related species together. 
+
+*Taxonomic codes can be found here: https://www.birds.cornell.edu/clementschecklist/download/ *
+
+```{r, fig.width = 8, fig.height = 9}
+all_warblers_map <- filtered_data_week %>% 
+  filter(taxonomic_order %in% (32667:33029))
+  
+coordinates(all_warblers_map) <- c("longitude", "latitude") #these are the column names, longitude first, then latitude
+
+proj4string(all_warblers_map) <- "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs"
+
+data_warbler = st_as_sf(all_warblers_map, coords = c("longitude", "latitude"))
+
+ggplot(background_smol) +
+  geom_sf()+
+  geom_sf(data = data_warbler, aes(color= common_name), size = 2)+
+  scale_color_viridis_d()+
+  facet_wrap( ~month)+
+  labs(title = "All Warbler Observation Map")
+```
+
+<br>
+The map  of all warblers is a somewhat dense, especially in the Cook County area, given that the population is higher there. However, the density of items suggests that there is a definite migratory trend. From the eBird observation summary website, warblers observation incidence is high in the beginning to mid September, so their migratory trend is visible from one month to the next. Below, I have plotted the week-by-week trend of one such migratory warbler, a Wilson's Warbler.
+
+```{r, fig.width = 8, fig.height = 9}
+wilsons_warbler_map <- filtered_data_week %>% 
+  filter(common_name=="Wilson's Warbler")
+
+coordinates(wilsons_warbler_map) <- c("longitude", "latitude") #these are the column names, longitude first, then latitude
+
+proj4string(wilsons_warbler_map) <- "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs"
+
+data_wwarbler = st_as_sf(wilsons_warbler_map, coords = c("longitude", "latitude"))
+
+ggplot(background_smol) +
+  geom_sf()+
+  geom_sf(data = data_wwarbler, color = "yellow3", size = 2)+
+  facet_wrap( ~week_num)+
+  labs(title = "Wilson's Warbler Observation Map")
+```
+
+For reference, a Wilson's Warbler looks like this (image retrieved from allaboutbirds.org): 
+![Regard for he has a little hat!](images/wilson_warbler.png)
+<br>
+It would seem as though Wilson's Warbler is a good representative of the overall warbler trend, so much so that it is not observed in the first two weeks of August at all, but peaks in weeks 6 and 7, the first two weeks of September, just as seen in the Warbler Observations by Week plot. 
+
+From here we can also observe the trend of Shorebirds, birds commonly found along shorelines and mudflats. They are also migratory. 
+
+```{r, fig.width = 8, fig.height = 9}
+all_shorebirds_map <- filtered_data_week %>% 
+  filter(taxonomic_order %in% (5577:5987))
+
+coordinates(all_shorebirds_map) <- c("longitude", "latitude") #these are the column names, longitude first, then latitude
+
+proj4string(all_shorebirds_map) <- "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs"
+
+data_shorebirds = st_as_sf(all_shorebirds_map, coords = c("longitude", "latitude"))
+
+ggplot(background_smol) +
+  geom_sf()+
+  geom_sf(data = data_shorebirds, aes(color= common_name), size = 2)+
+  scale_color_viridis_d()+
+  facet_wrap( ~month)+
+  labs(title = "All Shorebirds Observation Map")
+```
+<br>
+While slight, as weeks 4 and 5 are divided between both months, there are a greater number of shorebirds observed in August than in September. According to the observation trend, shorebird observation incidence tends to peak between August and September, which explains the difference in observation density and suggests migratory behavior. Of course, there might still be variability in exactly when birds migrate given changes in climate. Again, given how many species of shorebirds there are, the trend can also be represented by one such shorebird: a Semipalmated Sandpiper.
+
+![A shorebird in its natural habitat.](images/plover.png)
+
+```{r, fig.width = 8, fig.height = 9}
+sp_sandpiper_map <- filtered_data_week %>% 
+  filter(common_name=="Semipalmated Sandpiper")
+
+coordinates(sp_sandpiper_map) <- c("longitude", "latitude")
+
+proj4string(sp_sandpiper_map) <- "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs"
+
+data_spsandpiper = st_as_sf(sp_sandpiper_map, coords = c("longitude", "latitude"))
+
+ggplot(background_smol) +
+  geom_sf()+
+  geom_sf(data = data_spsandpiper, color = "gold3", size = 2)+
+  facet_wrap( ~week_num)+
+  labs(title = "Semipalmated Sandpiper Observation Map")
+```
+
+
+
+## Conclusion and Discussion
+
+In summary, my analysis determined that most eBird checklist submissions take place in the early morning, which appears to be the optimal time for birding. The days on which people observe birds tend to follow the typical work week, with more submitted on weekends. The observations of birds change over time according to compiled migratory data, while common, year-round bird observations also fluctuate as a result of variable detection. 
+It was fascinating to be able to apply the coding we learned in class to explore a topic of interest to me. I was able to plot not only time-based trends, but wrap them so that I could show more than one plot at once. In learning about the eBird dataset, I could follow trends with recently-collected, human-data. 
+
+
+
